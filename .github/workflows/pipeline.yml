@@ -1,0 +1,116 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI TP4
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events but only for the "main" branch
+  # push:
+  #   branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        required: true
+        options:
+          - dev
+          - test
+          - prod
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Pull image
+      run: | 
+        docker pull ${{ secrets.DOCKER_USERNAME }}/myimage:1.0.0
+
+    # - name: Scan image for vulnerabilities
+    #   uses: aquasecurity/trivy-action@master
+    #   with:
+    #     image-ref: '${{ secrets.DOCKER_USERNAME }}/myimage:1.0.0'
+    #     format: 'table'
+    #     exit-code: '1'
+    #     ignore-unfixed: true
+    #     vuln-type: 'os,library'
+    #     severity: 'CRITICAL'
+
+    - name: Generate SSH key
+      id: generate_key
+      run: |
+        ssh-keygen -q -N "" -f id_rsa <<<y >/dev/null 2>&1
+        PRIVATE_KEY=$(cat id_rsa)
+        PUBLIC_KEY=$(cat id_rsa.pub)        
+        echo ::set-output name=private_key::${PRIVATE_KEY}
+        echo ::set-output name=public_key::${PUBLIC_KEY}
+
+    - name: Store SSH private key
+      run: |        
+        echo "${{ steps.generate_key.outputs.private_key }}" > id_rsa
+        echo "${{ steps.generate_key.outputs.public_key }}" > id_rsa.pub
+        chmod 600 id_rsa
+        chmod 600 id_rsa.pub
+
+    # - name: destroy terraform 
+    #   run: |
+    #     if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+    #       terraform -chdir=./terraform/dev init -var-file=terraform.tfvars 
+    #       terraform -chdir=./terraform/dev destroy -var-file=terraform.tfvars -auto-approve
+    #     fi
+
+    - name: configure terraform 
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+          echo "Deployment in dev"
+          terraform -chdir=./terraform/dev init -var-file=terraform.tfvars 
+          terraform -chdir=./terraform/dev plan -var-file=terraform.tfvars
+          terraform -chdir=./terraform/dev apply -var-file=terraform.tfvars -auto-approve
+        elif [ "${{ github.event.inputs.environment }}" == "test" ]; then   
+          echo "Deployment in test"
+          terraform -chdir=./terraform/test init -var-file=terraform.tfvars
+          terraform -chdir=./terraform/test plan -var-file=terraform.tfvars
+          terraform -chdir=./terraform/test apply -var-file=terraform.tfvars -auto-approve
+        elif [ "${{ github.event.inputs.environment }}" == "prod" ]; then
+          echo "Deployment in prod"
+          terraform -chdir=./terraform/prod init -var-file=terraform.tfvars
+          terraform -chdir=./terraform/prod plan -var-file=terraform.tfvars
+          terraform -chdir=./terraform/prod apply -var-file=terraform.tfvars -auto-approve
+        fi
+
+    - name: connect to the VM with ssh
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+          export IP_VM_EXT=$(terraform -chdir=./terraform/dev output -raw vm_extern_ip)
+          export VM_USER=$(terraform -chdir=./terraform/dev output -raw vm_username)
+          export USER=$(echo $VM_USER | awk '{print $1}' FS="@" OFS=" ")
+          echo " ------------ LS --------------" 
+          ls
+          echo " ------------ SSH -------------------"
+          ssh -o StrictHostKeyChecking=no -i ./id_rsa $USER@$IP_VM_EXT
+          # cat ./id_rsa.pub | ssh USER@$IP_VM_EXT "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+          #ssh-copy-id -i id_rsa.pub $IP_VM_EXT
+        elif [ "${{ github.event.inputs.environment }}" == "test" ]; then 
+          export IP_VM_EXT=$(terraform -chdir=./terraform/dev output -raw vm_extern_ip)
+          export VM_USER=$(terraform -chdir=./terraform/dev output -raw vm_username)
+          export USER=$(echo $VM_USER | awk '{print $1}' FS="@" OFS=" ")
+          ssh $USER@$IP_VM_EXT
+        fi
